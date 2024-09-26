@@ -1,0 +1,645 @@
+---
+title: "從FoodPanda餐廳資料解析消費者行為與偏好"
+author: "110000168 陳冠希"
+date: 2024-05-29
+output:
+  html_document: 
+    theme: darkly
+    highlight: textmate
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_depth: 5
+    css: style_new.css
+    editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      collapse = FALSE,
+                      comment = "",
+                      class.output = ".codeout")
+theme_set(theme_bw())
+```
+
+---
+
+## 1. 引言
+
+---
+
+### 1.1 市場背景
+
+**在這個科技日新月異的時代，人們開始更注重生活品質與便利，再加上前段時間疫情的影響，大衆開始對餐點外送這個服務有了大規模的需求，在街上時常都會看見不同外送平台的外送員在努力的工作趕往餐廳或送餐地點。隨著各種外送平台的不斷增加，市場上的競爭也越來越激烈，本篇分析報告將著重於研究FoodPanda外送平台並透過該平台上的數據進行分析。**
+
+---
+
+### 1.2 研究動機
+
+**foodpanda是德國的外賣企業Delivery Hero旗下的線上餐飲外送服務平台，於2012年創立，營業範圍覆蓋亞洲和歐洲等多個國家和地方。在台灣市場中foodpanda原本占據了大部分的外送市場份額，但隨後另一外送平台佼佼者Ubereats後來居上，在台灣市場中將foodpanda收購於其公司之下。這也就讓我更好奇foodpanda在這場競爭中落敗的原因。因此，本篇報告主要對從kaggle上獲取的foodpanda平台數據進行分析，並尋找出訂單量減少的原因及影響訂單量的因素、變量等，藉此探討影響foodpanda競爭力的原因。**
+
+---
+
+## 2. 資料來源與預處理
+
+---
+
+### 2.1 資料清洗及篩選處理
+
+```{r}
+# 原始資料讀取及展示
+library(readr)
+library(dplyr)
+fp = read.csv("foodpanda_data.csv", na.strings = "")
+print("####### GLIMPSE #######")
+glimpse(fp)
+
+# 原始資料總結展示
+print("####### SUMMARY #######")
+summary(fp)
+```
+
+
+```{r}
+# 檢查是否有缺失值
+# fp |> filter(is.na(is_new_until))
+
+# 去除缺失值
+fp = na.omit(fp)
+
+# 標示餐廳的價位等級
+fp = fp |> mutate(budget = case_when(budget == "1" ~ "Low",
+                                budget == "2" ~ "Medium",
+                                budget == "3" ~ "High"))
+
+# 標示及格式化訂單時間，並篩選出2000年至2023年的資料
+library(lubridate)
+fp = fp |> 
+  mutate(is_new_until = year(as.Date(is_new_until))) |> 
+  rename(year = is_new_until) |> 
+  filter(year>= 2000 & year<=2023) |> 
+  arrange(year)
+```
+
+
+```{r}
+# 檢查fp資料集中minimum_delivery_time變量是否有異常值
+# fp |> count(minimum_delivery_time)
+
+# 篩選出合理的運送時間（若訂單配送大於120分鐘就會取消訂單）
+fp = fp |> filter(minimum_delivery_time>= 0 & minimum_delivery_time<= 120)
+
+# fp資料集中的minimum_order_amount變量中的值皆為0，因此不將該變數列爲分析考量
+#fp |> count(minimum_order_amount)
+fp = fp |> mutate(minimum_order_amount  = NULL)
+
+# 本篇分析報告不考量post_code、review_with_comment_number、vertical、is_active、is_promoted、timezone列變量，所以將其刪除
+fp = fp |>  mutate(post_code = NULL,
+                   review_with_comment_number = NULL,
+                   vertical = NULL,
+                   is_active = NULL,
+                   is_promoted = NULL,
+                   timezone = NULL)
+
+# 本篇分析報告只考慮餐廳的數據，因此需對包含非餐廳的數據進行篩選
+fp = fp |> filter(vertical_parent == "Restaurant")
+```
+
+---
+
+### 2.2 資料字典概述
+
+```
+budget: 餐廳的價位等級
+year: 訂單成立年份
+latitude: 餐廳地理位置的緯度
+longitude: 餐廳地理位置的經度
+minimum_delivery_time: 完成送餐的最短時間(以分鐘計)
+minimum_pickup_time: 顧客在餐廳自取餐點的最短等待時間(以分鐘計)
+name: 餐廳的名稱
+rating: 餐廳的評分
+review_number: 餐廳收到的評論數量
+vertical_parent: 訂單類型的分類
+delivery_provider: 提供送餐服務的供應商
+is_new: 表示餐廳是否為新開業的布林值
+city: 餐廳所在的城市
+dine_in: 表示餐廳是否提供内用服務的布林值
+main_cuisine: 餐廳主要提供的菜系類型
+country: 餐廳所在的國家
+
+```
+
+---
+
+## 3. 資料分析與結果可視化
+
+---
+
+### 3.1 區隔目標客戶市場
+
+---
+
+#### 3.1.1 FoodPanda平臺的平均訂單量百分比如何隨著年份而改變？
+
+```{r}
+# 繪製FoodPanda平臺平均訂單量百分比最低的4個年份,並將平均訂單量百分比設爲KPI
+order_percentage = fp |> group_by(year = as.factor(year)) |> 
+                         summarize(n = n()) |> 
+                         mutate(kpi_percent = 100*n/sum(n)) |> 
+                         arrange(kpi_percent)  
+       
+      
+pic_least = order_percentage |> 
+            head(n = 4) |> 
+            ggplot() + 
+            geom_col(aes(year, kpi_percent), fill = "darkred") +
+            geom_text(aes(year, kpi_percent, label = round(kpi_percent,2)), vjust = 1.2, color = "white") +
+            ylab("order amount %") +
+            ggtitle("The 4 least frequent years in the dataset")
+
+# 繪製FoodPanda平臺平均訂單量百分比最高的4個年份
+pic_most = order_percentage |> 
+           tail(n = 4) |> 
+           ggplot() +                             
+           geom_col(aes(year, kpi_percent), fill = "darkgreen") +
+           geom_text(aes(year, kpi_percent, label = round(kpi_percent,2)), vjust = 1.2, color = "white") +
+           ylab("order amount %") +
+           ggtitle("The 4 most frequent years in the dataset") 
+
+library(patchwork)
+
+pic_least/pic_most
+```
+
+上述兩張直方圖分別描述了FoodPanda平臺平均訂單量百分比最低及最高的4個年份。從上述兩個直方圖可以發現FoodPanda平臺上平均訂單量百分比最高的年份大多分佈在2019年至2022年之間，其中2020年至2022年疫情期間該平臺的平均訂單量百分比更是處於高峰階段，這也就表明了大衆使用外送平臺訂餐的需求日益上升。
+
+---
+
+#### 3.1.2 FoodPanda平臺訂單量最多的五個國家有哪些？
+
+```{r}
+# 繪製FoodPanda平臺訂單最多的5個國家
+most_country = fp |> group_by(country) |> 
+                     summarize(n = n()) |> 
+                     arrange(n) |> 
+                     tail(n = 5) 
+
+most_country |> ggplot() + 
+                geom_col(aes(fct_reorder(country,n),n, fill = country)) + 
+                geom_text(aes(country, n, label = n), vjust = 1.2, color = "white")+
+                ylab("order amount") + 
+                ggtitle("The 5 most frequent country in the dataset") 
+```
+
+從上述柱狀圖可以觀察到FoodPanda平臺上餐廳的訂單量最多的五個國家排序分別是泰國、馬來西亞、台灣、孟加拉和緬甸，尤其是台、馬、泰三國的訂單量遠超于資料集中的其他國家。從中可以得知這三個國家的用戶的訂餐頻率是最高的，同時他們對於訂餐的消費需求也是最高的。因此，FoodPanda可以藉由這個數據結果鎖定這三國的目標客戶群及在這些國家接洽更多的餐廳並提供配送服務，這樣一來就可以在滿足用戶需求的同時，又能達到企業業績提升的效果。
+
+---
+
+#### 3.1.3 FoodPanda平臺中訂單量最多的三個國家之訂單量隨著時間變化的趨勢爲何？
+
+```{r}
+# 繪製三國隨著時間變化的訂單量
+three_country = fp |> filter(country == "Thailand"| country == "Malaysia"| country == "Taiwan") |>
+      group_by(year, country) |> 
+      summarise(n = n()) 
+
+three_country |> ggplot() + 
+                 geom_line(aes(year, log(n),col = country)) +
+                 scale_x_continuous(breaks = seq(min(three_country$year), max(three_country$year), by = 1)) +
+                 ggtitle("The trend of change in order amount in the most frequent 3 countries") +
+                 ylab("order amount in log form")
+```
+
+上述圖表顯示台、馬、泰三國隨時間變化的折線圖，從圖中可以觀察到三個國家的訂單量都隨著時間的增加而遞增，同時在2022年左右達到最高峰后三國的訂單量都出現了下降的趨勢。這個階段處於疫情即將結束的階段，而在這個階段由於各國民衆對於外送食物的需求量龐大，也出現了不少的其他外送平臺競爭者。這或許是導致FoodPanda的訂單量在這三個國家有所下降的原因之一，因爲其市場份額被其他外送平臺占據了。圖中也顯示出台灣於去年2023年在FoodPanda上的訂單量位居三國之首,或許有其他的原因主導著FoodPanda在台灣的市場並值得我們去探索，因此接下來會對台灣的市場進行更進一步的分析。
+
+---
+
+#### 3.1.4 FoodPanda台灣市場中縣市與地理位置的差異是否會影響訂單量？
+
+```{r}
+market_tw = fp |> filter(country == "Taiwan") |> 
+                  group_by(city) |> 
+                  summarise(n = n()) |> 
+                  rename(location_name = city) |> 
+                  mutate(location_type = case_when(str_ends(location_name, "County") ~ "County",
+                                                .default = "City"),
+                          location_name = case_when(str_ends(location_name, "County") ~ str_sub(location_name, end = -7),
+                                                .default = str_sub(location_name, end = -5)))
+
+# 繪製台灣各縣的訂單量
+market_county = market_tw |> filter(location_type == "County") |> 
+                ggplot() + 
+                geom_col(aes(fct_reorder(location_name,n), n), fill = "orange") +
+                geom_text(aes(location_name, n, label = n), vjust = 1.2, color = "black") +
+                facet_wrap(~location_type) +
+                xlab("location_name") +
+                ylab("order amount") +
+                coord_flip()
+
+# 繪製台灣各市的訂單量
+market_city = market_tw |> filter(location_type == "City") |> 
+              ggplot() + 
+              geom_col(aes(fct_reorder(location_name,n), n), fill = "skyblue") +
+              geom_text(aes(location_name, n, label = n), vjust = 1.2, color = "black") +
+              facet_wrap(~location_type) +
+              xlab("location_name") +
+              ylab("order amount") +
+              coord_flip()
+
+market_county*market_city + plot_annotation("Distribution of order in counties and cities in Taiwan")
+```
+
+上述直方圖描述了台灣市場中訂單量最高的縣是彰化縣；而金門縣和澎湖縣則是並列訂單量最低的兩個縣。這個分析結果也可説是符合預期，彰化縣是台灣目前人口排行第一的縣級行政區，縣人口越多則對於食物外送的需求量也越高，因而在這個地區才會有相對較高的訂單量；反之，金門縣和澎湖縣偏離台灣本島，且土地面積較小及人口密度也相對較低，所以對於食物配送的需求量就沒那麽高，因而在該地區訂單量會處於稀缺的狀態。而上述右方直方圖則描繪了台灣市場中訂單量最多的市區是新臺北市，而訂單量最少的市區則是基隆市，從上述兩張直方圖的訂單量分佈可以觀察到大部分的市區訂單量都會比縣的訂單量來得高。
+
+
+```{r}
+library(ggmap)
+register_stadiamaps("0dabbbb2-705f-4c2b-ab7d-eeb585d04274", write = TRUE)
+
+# 繪製台灣地圖
+bbox_tw <- c(left = 120.106188593, bottom = 21.9705713974, right = 121.951243931, top = 25.2954588893)
+# get_stadiamap(bbox_tw, zoom = 12, maptype = "stamen_toner_lite") |>  ggmap()
+
+tw_map = fp |> filter(country == "Taiwan") |> 
+               reframe(longitude = longitude,
+                       latitude = latitude)
+
+# 繪製FoodPanda餐廳在台灣各地的坐標位置
+qmplot(longitude, latitude, data = tw_map, maptype = "stamen_toner_lite", color = I("deeppink"), alpha = I(0.02)) + ggtitle("Distribution of orders in Taiwan")
+```
+
+上述地圖中餐廳訂單量分佈最多的地區大多也都分佈於台灣的中北部，台灣的東部及離島地區則出現訂單量較少的狀況。因此，在台灣市場中的訂單量會隨著縣市的人口差異、地理位置不同而有所變化，FoodPanda企業可以考慮在訂單量最高的縣市與更多的商家合作，以提供更多的食物配送服務滿足該地區用戶的需求，同時提升自身的業績。
+
+---
+
+### 3.2 理解用戶購買偏好
+
+---
+
+#### 3.2.1 FoodPanda台灣市場中不同縣市的餐廳之平均評分分佈爲何？
+
+```{r}
+restaurant_tw = fp |> filter(country == "Taiwan") |> 
+                      reframe(location_name = case_when(str_ends(city, "County") ~ str_sub(city, end = -7),
+                                                .default = str_sub(city, end = -5)),
+                              longitude = longitude,
+                              latitude = latitude,
+                              average_rating = rating)
+
+# 繪製台灣市場各餐廳的平均評分分佈
+#get_stadiamap(bbox_tw, zoom = 12, maptype = "stamen_toner_lite") |>  ggmap() 
+
+qmplot(longitude, latitude, data = restaurant_tw, maptype = "stamen_toner_lite", color = average_rating, alpha = I(0.05)) + ggtitle("Average Rating of Restaurants in Taiwan")
+```
+
+從上圖可以觀察到FoodPanda上的餐廳評分在台灣本島都處於2至5分的區間，但在臺北、臺中、臺南和高雄這幾個市區因爲提供外送的餐廳數量相對較多而有明顯的餐廳評分較低的趨勢；相反地，在台灣離島地區雖然訂單量較少，但這些餐廳的平均評分都相對本島來得高。因此，FoodPanda企業可以參考這些有明顯餐廳評分較低趨勢的市區進行與商家的洽談，以提升各個店家的平均評分而讓業績得以增長。
+
+---
+
+#### 3.2.2 FoodPanda台灣市場中訂單量最多且評分最高的五種餐點類型有哪些？
+
+```{r}
+#install.packages("showtext")
+library(showtext)
+showtext_auto(enable = TRUE)
+
+# 指定使用的字體
+font_add(family = "STSong", regular = "STSong.ttf") # 路徑需指向具體的字體文件
+
+# 繪製各個餐點類型與評分的熱力圖
+food_heatmap = fp |> filter(country == "Taiwan") |>
+                     mutate(rating = round(rating)) |> 
+                     count(main_cuisine, rating) |> 
+                     complete(main_cuisine, rating, fill = list(n = 0)) |> 
+                     ggplot(aes(main_cuisine, rating)) + 
+                     geom_tile(aes(fill = n)) +
+                     geom_text(aes(label = n), col = "lightblue") +
+                     theme(text = element_text(family = "STSong"))+
+                     ggtitle("Distribution of Orders between Rating and Main Cuisine Type")
+
+# 繪製評分最高及訂單最多的五種餐點類型
+food_rating = fp |> filter(country == "Taiwan") |> 
+                    group_by(main_cuisine) |> 
+                    summarise(n = n()) |> 
+                    arrange(n) |>
+                    tail(n = 5) |>
+                    ggplot() +
+                    geom_col(aes(x = fct_reorder(main_cuisine, n), y = n, fill = main_cuisine))+
+                    geom_text(aes(main_cuisine, n, label = n), vjust = 1.2, color = "white") +
+                    ylab("order amount") +
+                    xlab("main_cuisine") +
+                    ggtitle("Top 5 Main Cuisine Type in Taiwan")
+
+food_heatmap/food_rating
+```
+
+上方的熱力圖説明了FoodPanda在台灣市場中每一種餐點類型（main_cuisine)與這些餐點的平均評分(rating)的訂單量分佈。而下方的直方圖可以觀察到台式餐點是在FoodPanda上最受用戶喜愛的餐點之一，而其訂單量也是位居榜首，這也説明了用戶對於台式的餐點有明顯的偏好。其他的餐點類型像是小吃類、歐美式、甜點類、日式餐點等在經過分析後也可被評量為用戶最愛的幾種餐點類型。因此，在充分地分析和瞭解消費者偏好和他們對於什麽樣的餐點感興趣之後，FoodPanda企業可以選擇去和更多提供這些餐點的商家合作，以利進一步的目標客戶市場開發。
+
+---
+
+#### 3.2.3 FoodPanda台灣市場中用戶偏好FoodPanda配送、商家配送或是預訂餐點自取服務？
+
+```{r}
+library(gganimate)
+library(gifski)
+
+delivery_tw = fp |> filter(country == "Taiwan") |> 
+                    group_by(year, delivery_provider) |> 
+                    summarise(n = n())
+
+# 繪製三種取餐方式隨時間變化的訂單量動圖
+delivery_tw |> ggplot(aes(x = year, y = log(n), color = delivery_provider))+
+               geom_line() +
+               geom_point() +
+               ggtitle("Order Amount of Restaurants by delivery_provider from 2012 to 2023") +
+               scale_x_continuous(breaks = seq(min(delivery_tw$year), max(delivery_tw$year), by = 1))+
+               ylab("order amount") +
+               transition_reveal(year)
+      
+```
+
+從上述圖型隨時間變化的趨勢圖可以發現FoodPanda台灣市場中的用戶長期來説對於FoodPanda平臺的外送服務(platform_delivery)是有較大的需求的，相較於商家自己提供的配送服務(vendor_delivery)與預定餐點自取服務(dine_in)，消費者會更偏好於使用FoodPanda的外送服務爲他們外帶餐點。這也就説明了FoodPanda相較於其他餐點配送方式更具潛在的優勢及需求量。
+
+---
+
+#### 3.2.4 FoodPanda台灣市場中新開業的餐廳與舊開業的餐廳在訂單量上有什麽區別？
+
+```{r}
+is_new_tw = fp |> filter(country == "Taiwan") |> 
+            group_by(year, is_new) |> 
+            summarise(n = n()) 
+
+# 繪製新舊餐廳的訂單量差異
+is_new_tw |> ggplot() +
+             geom_col(aes(x = year, y = n, fill = is_new), position = "dodge") +
+             geom_text(aes(year, n, label = n), vjust = 1.2, color = "white")+
+             scale_x_continuous(breaks = seq(min(is_new_tw$year), max(is_new_tw$year), by = 1)) +
+             ggtitle("Distribution of Orders in New or Old Restaurants in Taiwan")+
+             ylab("order amount")
+```
+
+從上述圖表我們可以觀察到在台灣市場中的2017年至2021年，舊餐廳的訂單量不斷攀升，這些年度一直都沒有新的商家加入FoodPanda的外送平臺。在2023年時終於有了新的商家的加入，而這些商家在加入平臺初期就擁有了超越舊店家的訂單量，這可能是因爲新店家的加入往往會以促銷活動來吸引用戶到該店家進行消費，讓消費者偏好於新店家的餐點，進而導致新店家的訂單量高於舊店家的訂單量。
+
+---
+
+#### 3.2.5 FoodPanda台灣市場中的用戶是否會因爲餐廳的評分和餐廳的新舊程度而影響他們的購買偏好？
+
+```{r}
+# 繪製餐廳評分和訂單量之間的相關係數矩陣圖
+corr_rating = fp |> filter(country == "Taiwan") |> 
+                    count(rating)  
+            
+rating_matrix = cor(corr_rating, use="complete.obs")
+
+library(tidyverse)
+library(corrplot)
+library(GGally)
+
+
+rating_graph = corrplot(rating_matrix, method = "circle", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.7) 
+```
+
+上圖顯示餐廳評分與訂單量的相關係數矩陣圖，這兩個變量之間的相關係數為0.43，而淺藍色小圓表明餐廳評分與訂單量之間存在弱正相關。這就表示餐廳的評分越高，訂單量也會隨之提升。
+
+
+```{r}
+# 繪製餐廳新舊程度和訂單量之間的相關係數矩陣圖
+corr_is_new = fp |> filter(country == "Taiwan") |> 
+                    count(is_new)  
+          
+is_new_matrix = cor(corr_is_new, use="complete.obs")
+
+
+is_new_graph = corrplot(is_new_matrix, method = "circle", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.7)
+```
+
+上圖顯示餐廳的新舊程度與訂單量的相關係數矩陣圖，這兩個變量之間的相關係數為-1，而深紅色大圓表明餐廳新舊程度與訂單量之間存在強負相關。餐廳的新舊程度可以看作是從0至1的區間，0代表餐廳是舊餐廳，而1代表餐廳是新餐廳。當餐廳的新舊程度增加時，意味著餐廳更趨向於新餐廳，訂單量會隨之呈負面的增長。這也就説明了餐廳越新，訂單量則會越少的現象。因此，我們可以從上述兩張圖中得知餐廳的評分和新舊程度都會影響消費者的購買偏好，進而對訂單量產生一定的影響。
+
+---
+
+### 3.3 影響用戶消費行為之因素
+
+---
+
+#### 3.3.1 餐廳的價位是否會影響消費者的訂單量？
+
+```{r}
+fp |> filter(country == "Taiwan") |> 
+      count(budget) |> 
+      ggplot() +
+      geom_col(aes(x = budget, y = n, fill = budget)) +
+      geom_text(aes(budget, n, label = n), vjust = 1.2, color = "white")+
+      ylab("order amount") +
+      facet_wrap(~budget)
+```
+
+上述圖表中可以觀察到價位較高的餐廳所接到的訂單量最少，而價位中等的餐廳則接到最多的訂單。這個分析結果也算是符合預期及合理的，因爲通常價位較高的餐廳像是日式、韓式等餐廳大多消費者都會選擇直接内用而不是外帶。因此，這也説明了餐廳的價位會影響用戶的消費行爲。
+
+---
+
+#### 3.3.2 FoodPanda中三種獲取餐點的服務類型之間的訂單延誤率區別爲何？
+
+```{r}
+# 將20分鐘設爲判斷外送延誤的標準臨界值，並將延誤率設爲KPI
+delay_boundary <- 20
+
+fp |> filter(country == "Taiwan") |> 
+      select(minimum_delivery_time, delivery_provider, city) |> 
+      group_by(delivery_provider) |> 
+      summarise(num_orders = n(),
+                num_delay = sum(minimum_delivery_time >= delay_boundary),
+                kpi_delay = round((num_delay/num_orders)*100,2)) |> 
+      ggplot() +
+      geom_col(aes(x = fct_reorder(delivery_provider, num_orders), y = num_orders, fill = kpi_delay)) +
+      geom_text(aes(delivery_provider, num_orders, label = num_orders), vjust = 1.2, color = "black")+
+      ylab("order amount")+
+      ggtitle("Difference of Delay Rate Among the Three Delivery Provider")+
+      coord_flip()
+```
+
+如上圖顯示結果可以得知FoodPanda平臺外送所接收到的訂單量是最多的，但同時也是餐點配送延誤率最高的。而另兩個獲取餐點的方式則是選擇使用商家所提供的自家餐點配送服務或是選擇直接在餐廳中内用。這兩個方式的延誤率較則是低的且同時訂單量也相對較少。通常餐廳商家自身所提供的配送服務都會有距離限制，也就是説只能將餐點配送給鄰近的用戶，一旦超過特定的距離限制就無法提供外送服務。相反地，FoodPanda的餐點配送服務所提供的配送距離範圍較廣，所以往往需要更長的時間才能將餐點配送到消費者的手上，進而導致FoodPanda的訂單延誤率會相較於其他兩種獲取餐點方式來得高。若FoodPanda可以在提升餐點配送效率這方面加以優化及提供更快捷的餐點配送服務，那就可以通過掌握影響用戶消費行爲的因素而對該公司的業績產生更多正面的影響。
+
+---
+
+#### 3.3.3 台灣各縣市的餐點配送延誤率是否合會影響用戶的餐點訂單量與餐點評分？
+
+```{r}
+fp |> filter(country == "Taiwan") |> 
+      group_by(city) |> 
+      summarise(num_orders = n(),
+                num_delay = sum(minimum_delivery_time >= delay_boundary),
+                kpi_delay = round((num_delay/num_orders)*100,2),
+                rating = mean(rating)) |>
+      rename(location_name = city) |> 
+      mutate(location_type = case_when(str_ends(location_name, "County") ~ "County",
+                                                .default = "City"),
+             location_name = case_when(str_ends(location_name, "County") ~ str_sub(location_name, end = -7),
+                                                .default = str_sub(location_name, end = -5))) |> 
+      ggplot() +
+      geom_col(aes(x = kpi_delay, y = num_orders, fill = kpi_delay)) +
+      ggtitle("Differences of Delay Rate and Orders between City and County in Taiwan")+
+      ylab("order amount")+
+      facet_wrap(~ location_type) +
+      coord_flip()
+```
+
+上圖敘述了台灣各縣市的訂單量及訂單延誤率之間的關係。首先，我們可以觀察到台灣的城市會相對於縣級市區擁有更高的訂單量，而隨著訂單延誤率的增加在台灣所有縣市中的訂單量都會逐漸的下降。因此，從這個趨勢可以得出訂單延誤率與訂單量呈負相關的關係，簡而言之餐點的延誤率上升會改變用戶的消費行爲而促使訂單量下降。
+
+
+```{r}
+fp |> filter(country == "Taiwan") |> 
+      group_by(city) |> 
+      summarise(num_orders = n(),
+                num_delay = sum(minimum_delivery_time >= delay_boundary),
+                kpi_delay = round((num_delay/num_orders)*100,2),
+                rating = round(mean(rating)),2) |>
+      rename(location_name = city) |> 
+      mutate(location_type = case_when(str_ends(location_name, "County") ~ "County",
+                                                .default = "City"),
+             location_name = case_when(str_ends(location_name, "County") ~ str_sub(location_name, end = -7),
+                                                .default = str_sub(location_name, end = -5))) |> 
+      ggplot() +
+      geom_col(aes(x = kpi_delay, y = rating, fill = kpi_delay)) +
+      ggtitle("Differences of Delay Rate and Rating between City and County in Taiwan")+
+      facet_wrap(~ location_type) +
+      coord_flip()
+```
+
+上圖敘述了台灣各縣市的餐廳評分及訂單延誤率之間的關係。首先，我們可以觀察到台灣的縣級市區餐廳會相對於城市擁有更高的評分，而隨著訂單延誤率的增加在台灣所有縣市中的餐廳評分都會逐漸的下降。因此，從這個趨勢可以得出訂單延誤率與餐廳評分呈負相關的關係，簡而言之餐點的延誤率提升會改變用戶的消費行爲而促使餐廳評分下降。
+
+---
+
+#### 3.3.4 餐點的種類是否會影響餐點配送延遲率？
+
+```{r}
+fp |> filter(country == "Taiwan") |> 
+      group_by(main_cuisine) |> 
+      summarise(num_orders = n(),
+                num_delay = sum(minimum_delivery_time >= delay_boundary),
+                kpi_delay = round((num_delay/num_orders)*100,2)) |> 
+      ggplot() +
+      geom_col(aes(x = fct_reorder(main_cuisine, kpi_delay), y = kpi_delay, fill = main_cuisine)) +
+      geom_text(aes(main_cuisine, kpi_delay, label = kpi_delay), vjust = 1.2, color = "white")+
+      ggtitle("Distribution of Delay Rate in Different Type of Cuisine")
+```
+
+從上圖中可以觀察到不同種類的餐點會有不同的延誤率,其中延誤率最高的則是歐美式的餐點，而台式餐點延誤率偏低，其他類型的餐點則是延誤率幾乎為0。歐美式的餐點通常是西式的焗烤飯或是其他的西餐類餐點，往往會需要商家用更多的時間去準備，而導致餐點配送的時間會隨之增加，這就影響了餐點延誤率的上升。相反地，台式餐點大多是滷肉飯、葱抓餅等等準備時間較短的餐點，所以這些餐點的延誤率就會相較於歐美式的餐點來得低。
+
+---
+
+### 3.4 影響餐廳訂單量因素的回歸分析
+
+---
+
+#### 3.4.1 對餐廳評分及最短配送時間進行回歸分析，並找出亞洲與歐洲的餐廳評分之預測值有哪些？
+
+```{r}
+library(broom)
+
+europe_countries = c("Hungary", "Slovakia")
+
+fp |> mutate(continent = case_when(country %in% europe_countries ~ "Europe",
+                                   .default = "Asia")) |> 
+      group_by(continent) |> 
+      reframe(lm(rating ~ minimum_delivery_time) |>
+               augment()) |> 
+      ggplot() +
+      geom_point(aes(rating,.fitted, col = continent), size = 2.5) +
+      geom_abline() +
+      ggtitle("Relationship between Actual Ratings and Ratings Predicted by the Linear Regression Model for Each Continent")+
+      facet_wrap(~continent)
+```
+
+上述散點圖顯示了每個大陸（亞洲和歐洲）的實際評分與由線性回歸模型預測的評分之間的關係。每個點代表一個觀測值，x軸為實際評分，y軸為模型預測的評分。其中運用`geom_abline()`函數所繪製的對角線表示理想的預測，即預測值完全等於實際值的情況（斜率為1的直線）。上圖也用不同的顏色區分不同的大陸，紅色代表亞洲，藍色代表歐洲。上圖左邊亞洲區塊的大部分點集中在較低的評分區間，而模型預測的評分則相對更高，顯示在3.5到5.0之間，表明預測通常高於實際評分；而上圖右邊歐洲區塊的點的分佈更加均勻，實際評分和模型預測的評分都比較接近對角線，顯示模型對於歐洲資料的預測相對更準確。
+
+上圖所運用的綫性模型公式：`lm(rating ~ minimum_delivery_time)` 表示評分 (`rating`) 被預測為最小送餐時間 (`minimum_delivery_time`)的函數。這表示該模型試圖根據最小送餐時間來預測評分。從圖中可以看出，亞洲的預測結果普遍高於實際評分，可能表明模型過於樂觀或者存在某些偏差。歐洲的預測與實際評分更為接近，說明模型對歐洲資料的擬合更好。
+
+---
+
+#### 3.4.2 對餐點最短配送時間及餐點的價位進行回歸分析，並找出歐洲與亞洲的餐點最短配送時間之預測值有哪些？
+
+```{r}
+fp |> mutate(continent = case_when(country %in% europe_countries ~ "Europe",
+                                   .default = "Asia")) |> 
+      group_by(continent) |> 
+      reframe(lm(minimum_delivery_time ~ budget) |>
+               augment()) |> 
+      ggplot() +
+      geom_point(aes(minimum_delivery_time,.fitted, col = continent), size = 2.5) +
+      geom_abline() +
+      ggtitle("Actual Minimum Delivery Time vs. Linear Model Predictions for Each Continent")+
+      facet_wrap(~continent)
+```
+
+上述散點圖顯示了每個大陸（歐洲和亞洲）的實際最小送餐時間與線性模型預測值之間的關係。每個點代表一個觀測值，x軸表示實際的最小送餐時間，y軸表示模型預測的送餐時間。對角線表示理想的預測，即預測值完全等於實際值的情況（斜率為1的直線）。上述圖中散點也有用不同的顏色區分不同的大陸，紅色代表亞洲，藍色代表歐洲。上圖中亞洲的部分資料點主要集中在較低的最小送貨時間區域，但模型預測的送貨時間範圍廣泛，從接近0到超過20。這種差異可能表明模型對亞洲資料的擬合效果不理想；反觀歐洲部分的資料點和模型預測的值較為一致，大多數預測值都緊密地圍繞實際的最小送餐時間分佈，表明模型對歐洲資料的預測較為準確。
+
+上圖中的綫性模型公式：`lm(minimum_delivery_time ~ budget)` 表示最小送餐時間被預測為預算 (`budget`) 的函數。這意味著模型試圖根據預算大小來預測送餐時間。對於亞洲，模型預測的送餐時間與實際值的偏差較大，可能需要考慮更多的變數或檢查資料集中的異常值和分佈；而對於歐洲，模型的預測與實際值較為一致，說明模型對這部分資料有較好的擬合效果。
+
+---
+
+## 4. 總結
+
+---
+
+### 4.1 研究發現
+
+**經過前面的資料分析過程后，我們可以發現到人們對於餐點配送的需求在疫情時期達到最高峰，而在現在疫情後時代雖然需求有稍微下滑的趨勢，但大衆對於餐點配送的需求量還是非常大的，因爲餐點配送服務還是可以為人們的生活帶來便利的。我們也觀察出泰國、馬來西亞、台灣這幾個市場對於餐點配送的需求量特別大，這樣一來我們就可以對這些區域進行市場區隔，進一步地鎖定目標客戶群以利餐點訂單量的增加，進而達到利潤業績最大化的效果。從前述分析中可以觀察到在台灣市場中各縣市會有不同的餐點訂單量，這也説明了不同人口密度的區域，會有不同的餐點配送需求。**
+
+**此外，從數據中我們能夠理解用戶對於餐點的偏好在提升訂單量上也是至關重要的。經分析后也可以瞭解到台灣市場各個地區的餐廳評分分佈及用戶對於哪種類型的餐點有明顯的購買偏好。餐廳的評分不僅會影響消費者的購買偏好，也會進一步地影響消費者的購買行爲，而導致訂單量有所變動。因此，通過資料分析去找出影響用戶消費行爲的因素也是重要的發現之一。從分析中我們可以觀察到餐廳的價位會影響消費者的購買行爲而促使訂單量的改變。不僅如此，餐點配送的延誤率也是影響用戶消費行爲的關鍵指數(KPI)，若用戶每次訂餐都要經歷很長的時間才能獲得餐點，他們或許就不會選擇叫外送了，訂單量也會因而減少。從這次的分析報告中也對於會影響餐廳訂單量的因素進行了回歸分析，並藉此計算出餐廳評分及訂單最短配送時間的預測值分佈，這些發現都可以用作改善未來配送服務的基礎。**
+
+---
+
+### 4.2 對企業策略的建議
+
+**在完成整篇分析報告後，我發現若企業能夠清楚地對目標市場進行區隔，並投入更多地時間去理解平台用戶的購買偏好以及消費行爲，一定會對於企業的業績產生有利的影響。我認爲FoodPanda企業可以在訂單量需求較大的地區進行市場調查，並根據該區域用戶的餐點偏好類型去尋找適合且評分較高的餐廳商家進行合作。除此之外，我也建議FoodPanda企業也可以在餐點延誤率上進行優化，通過與送餐騎士接洽或制定獎勵機制等讓送餐的效率得以提升，並以用戶的訂餐體驗為首要目標。**
+
+---
+
+## 5. 結語
+
+---
+
+### 5.1 分析靈感
+
+**每當我在家中想吃東西卻不想出門買食物時，我就會選擇點外送來解決我的一餐。在路上我也時常看到外送員們不分日夜、不管天氣如何都在不斷地趕路，只爲將餐點準時送到用戶的手上。在疫情后各種外送平台不斷湧現造成市場競爭激烈，因此我想通過這些訂單相關的數據去分析及瞭解在這個外送平臺市場中會影響餐廳訂單量的各種因素，並探討這些因素會對各個外送平臺的競爭力造成怎樣的影響。**
+
+---
+
+### 5.2 資料處理所應用的R技術
+
+**本篇分析報告主要使用了EDA(Exploratory Data Analysis)探索性資料分析的方法對FoodPanda數據集進行處理及研究。通過使用一些函數將數據進行各種不同的分組、轉換及計算，再將經過處理的數據經由視覺化的方式對特定的問題提供解決方案及建議。此外，我在這篇報告中也有使用回歸分析對於影響FoodPanda平臺訂單量的因素進行預測值的計算。最後，再將所有的分析及資料視覺化的結果以Rmarkdown的格式撰寫，這樣後續就可以將檔案以html檔案格式導出，讓這份分析報告有較好的閲讀體驗。**
+
+---
+
+### 5.3 所應用的R函數與套件
+
+**R函數：**
+
+
+**read.csv、glimpse、filter、is.na、na.omit、mutate、case_when、year、as.Date、rename、arrange、group_by、summarize、n、ggplot、geom_col、scale_x_continous、seq、fct_reorder、coord_flip、geom_line、str_ends、str_sub、reframe、qmplot（繪製地圖的函數）、get_stadiamap（獲取特定地區的地圖）、geom_point、transition_reveal（創建動畫的函數）、count、cor（計算相關係數的函數）、facet_wrap、select、round、augment、lm、geom_abline、showtext_auto、font_add**
+
+
+
+**R套件：**
+
+
+**readr、dplyr、lubridate（對時間進行處理的套件）、patchwork（合圖）、ggmap（繪製地圖的套件）、gganimate（創建動態圖的套件）、gifski（創建高質量GIF動畫的套件）、tidyverse、corrplot（視覺化相關矩陣的套件）、GGally（創建成對關係圖及相關矩陣的套件）、broom（整理和處理統計模型輸出的套件）、showtext**
+
+---
+
+### 5.4 分析過程中遇到的挑戰
+
+**我覺得最有挑戰性的部分其實是在最初進行資料清理的過程，因爲在資料清洗的過程中要不斷地去理解變量背後的意義，也要去檢查變量中是否有缺失值、重複值，要學習判斷如何處理缺失值以及對時間資料進行時間格式化的處理，這些步驟都花費了我不少的時間及精力。此外，將這些處理好的乾净數據進行分組、轉換、計算並使用回歸分析得出變量的預測值對我來説也是挑戰蠻大的一部分，因爲我也花了好長一段時間去複習統計相關知識才拾起了之前對綫性回歸的記憶，讓自己對回歸結果中的各種係數能夠有更深層的瞭解。**
+
+---
+
+### 5.5 分析收穫與個人感想
+
+**在這堂課中我學習到了許多各種不同功能的指令以及處理時間序列資料相關的技巧，但老實説這些五花八門的指令我也沒辦法全部都記起來，還是需要靠不斷地練習才比較能夠記起來。但教授在課程中都有一直强調一些比較重要的指令，像是：group_by()、summarise()、mutate()、case_when()等，這些我都有比較深刻的印象因爲我都有將這些指令大量地運用在作業、報告中。我還記得教授説過這堂課的内容其實只是資料分析領域的一個敲門磚，還有更多更廣的資料分析指令等著我去自己去發掘及學習，無論如何都非常感謝教授這一學期的教導。**
+
+
